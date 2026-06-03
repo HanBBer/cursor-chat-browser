@@ -5,6 +5,7 @@ import path from 'path'
 import { NextResponse } from 'next/server'
 import Database from 'better-sqlite3'
 import { resolveWorkspacePath } from '@/utils/workspace-path'
+import { toComparablePath } from '@/utils/project-match'
 
 interface Project {
   id: string;
@@ -23,23 +24,32 @@ interface ConversationData {
 }
 
 function getProjectFromFilePath(filePath: string, workspaceEntries: Array<{name: string, workspaceJsonPath: string}>): string | null {
-  // Normalize the file path
-  const normalizedPath = filePath.replace(/^\/Users\/evaran\//, '')
-  
+  const normalizedPath = toComparablePath(filePath)
+  if (!normalizedPath) return null
+
+  // Pick the most specific (longest) workspace folder that is a path-prefix of
+  // the file, so nested projects win over their parents.
+  let bestId: string | null = null
+  let bestLen = -1
   for (const entry of workspaceEntries) {
     try {
       const workspaceData = JSON.parse(readFileSync(entry.workspaceJsonPath, 'utf-8'))
       if (workspaceData.folder) {
-        const workspacePath = workspaceData.folder.replace('file://', '').replace(/^\/Users\/evaran\//, '')
-        if (normalizedPath.startsWith(workspacePath)) {
-          return entry.name
+        const workspacePath = toComparablePath(workspaceData.folder)
+        if (
+          workspacePath &&
+          workspacePath.length > bestLen &&
+          (normalizedPath === workspacePath || normalizedPath.startsWith(workspacePath + '/'))
+        ) {
+          bestId = entry.name
+          bestLen = workspacePath.length
         }
       }
     } catch (error) {
       console.error(`Error reading workspace ${entry.name}:`, error)
     }
   }
-  return null
+  return bestId
 }
 
 function createProjectNameToWorkspaceIdMap(workspaceEntries: Array<{name: string, workspaceJsonPath: string}>): Record<string, string> {
@@ -166,6 +176,8 @@ export async function GET() {
     
     // Initialize conversation map - only count from global storage
     const conversationMap: Record<string, ConversationData[]> = {}
+    // Conversations that have real content but could not be matched to any workspace
+    const unassignedConversations: ConversationData[] = []
     
     // Get conversations from global storage only
     const globalDbPath = path.join(workspacePath, '..', 'globalStorage', 'state.vscdb')
@@ -189,7 +201,7 @@ export async function GET() {
             const composerId = parts[1]
             try {
               const context = JSON.parse(row.value)
-              if (context.projectLayouts && Array.isArray(context.projectLayouts)) {
+              if (context && typeof context === 'object' && context.projectLayouts && Array.isArray(context.projectLayouts)) {
                 if (!projectLayoutsMap[composerId]) {
                   projectLayoutsMap[composerId] = []
                 }
@@ -249,8 +261,22 @@ export async function GET() {
               bubbleMap
             )
             
-            // If no project found, skip this conversation
+            const conversationEntry: ConversationData = {
+              composerId,
+              name: composerData.name || `Conversation ${composerId.slice(0, 8)}`,
+              newlyCreatedFiles: composerData.newlyCreatedFiles || [],
+              lastUpdatedAt: composerData.lastUpdatedAt || composerData.createdAt,
+              createdAt: composerData.createdAt
+            }
+
+            // If no project found, keep it in the "unassigned" bucket as long as it
+            // actually has conversation content (non-empty headers), so nothing is
+            // silently dropped.
             if (!projectId) {
+              const headers = composerData.fullConversationHeadersOnly
+              if (Array.isArray(headers) && headers.length > 0) {
+                unassignedConversations.push(conversationEntry)
+              }
               continue
             }
             
@@ -259,13 +285,7 @@ export async function GET() {
               conversationMap[projectId] = []
             }
             
-            conversationMap[projectId].push({
-              composerId,
-              name: composerData.name || `Conversation ${composerId.slice(0, 8)}`,
-              newlyCreatedFiles: composerData.newlyCreatedFiles || [],
-              lastUpdatedAt: composerData.lastUpdatedAt || composerData.createdAt,
-              createdAt: composerData.createdAt
-            })
+            conversationMap[projectId].push(conversationEntry)
             
           } catch (parseError) {
             console.error(`Error parsing composer data for ${composerId}:`, parseError)
@@ -311,6 +331,22 @@ export async function GET() {
       })
     }
     
+    // Add a synthetic "Unassigned" project for conversations that have content
+    // but could not be matched to any workspace folder.
+    if (unassignedConversations.length > 0) {
+      const latest = unassignedConversations.reduce((max, c) => {
+        const t = c.lastUpdatedAt || c.createdAt || 0
+        return t > max ? t : max
+      }, 0)
+      projects.push({
+        id: 'unassigned',
+        name: 'Unassigned conversations',
+        path: '(conversations not matched to any workspace folder)',
+        conversationCount: unassignedConversations.length,
+        lastModified: new Date(latest || Date.now()).toISOString()
+      })
+    }
+
     // Sort by last modified, newest first
     projects.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime())
     

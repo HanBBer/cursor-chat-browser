@@ -4,6 +4,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import Database from 'better-sqlite3'
 import { resolveWorkspacePath } from '@/utils/workspace-path'
+import { toComparablePath } from '@/utils/project-match'
 import { ComposerData } from '@/types/workspace'
 
 interface ChatBubble {
@@ -309,23 +310,32 @@ function determineProjectForConversation(
 }
 
 function getProjectFromFilePath(filePath: string, workspaceEntries: Array<{name: string, workspaceJsonPath: string}>): string | null {
-  // Normalize the file path
-  const normalizedPath = filePath.replace(/^\/Users\/evaran\//, '')
-  
+  const normalizedPath = toComparablePath(filePath)
+  if (!normalizedPath) return null
+
+  // Pick the most specific (longest) workspace folder that is a path-prefix of
+  // the file, so nested projects win over their parents.
+  let bestId: string | null = null
+  let bestLen = -1
   for (const entry of workspaceEntries) {
     try {
       const workspaceData = JSON.parse(readFileSync(entry.workspaceJsonPath, 'utf-8'))
       if (workspaceData.folder) {
-        const workspacePath = workspaceData.folder.replace('file://', '').replace(/^\/Users\/evaran\//, '')
-        if (normalizedPath.startsWith(workspacePath)) {
-          return entry.name
+        const workspacePath = toComparablePath(workspaceData.folder)
+        if (
+          workspacePath &&
+          workspacePath.length > bestLen &&
+          (normalizedPath === workspacePath || normalizedPath.startsWith(workspacePath + '/'))
+        ) {
+          bestId = entry.name
+          bestLen = workspacePath.length
         }
       }
     } catch (error) {
       console.error(`Error reading workspace ${entry.name}:`, error)
     }
   }
-  return null
+  return bestId
 }
 
 function createProjectNameToWorkspaceIdMap(workspaceEntries: Array<{name: string, workspaceJsonPath: string}>): Record<string, string> {
@@ -427,6 +437,7 @@ export async function GET(
           const contextId = parts[2]
           try {
             const context = JSON.parse(row.value)
+            if (!context || typeof context !== 'object') continue
             if (!messageRequestContextMap[chatId]) messageRequestContextMap[chatId] = []
             messageRequestContextMap[chatId].push({
               ...context,
@@ -447,7 +458,7 @@ export async function GET(
           const composerId = parts[1]
           try {
             const context = JSON.parse(row.value)
-            if (context.projectLayouts && Array.isArray(context.projectLayouts)) {
+            if (context && typeof context === 'object' && context.projectLayouts && Array.isArray(context.projectLayouts)) {
               if (!projectLayoutsMap[composerId]) {
                 projectLayoutsMap[composerId] = []
               }
@@ -491,8 +502,13 @@ export async function GET(
             bubbleMap
           )
           
-          // Only process conversations that belong to this specific workspace
-          if (projectId !== params.id) {
+          // For the synthetic "unassigned" view, accept conversations that did
+          // not match any workspace; otherwise only this specific workspace.
+          if (params.id === 'unassigned') {
+            if (projectId !== null) {
+              continue
+            }
+          } else if (projectId !== params.id) {
             continue
           }
           

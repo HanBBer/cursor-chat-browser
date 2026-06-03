@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card } from "@/components/ui/card"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, ArrowDownWideNarrow, ArrowUpWideNarrow } from "lucide-react"
 import Link from "next/link"
 import { Loading } from "@/components/ui/loading"
 import { DownloadMenu } from "@/components/download-menu"
@@ -27,8 +27,13 @@ interface WorkspaceState {
 
 export default function WorkspacePage({ params }: { params: { id: string } }) {
   const searchParams = useSearchParams()
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
   const [state, setState] = useState<WorkspaceState>({
-    projectName: params.id === 'global' ? 'Global Storage' : `Project ${params.id.slice(0, 8)}`,
+    projectName: params.id === 'global'
+      ? 'Global Storage'
+      : params.id === 'unassigned'
+        ? 'Unassigned conversations'
+        : `Project ${params.id.slice(0, 8)}`,
     tabs: [],
     composers: [],
     selectedId: searchParams.get('tab'),
@@ -65,7 +70,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
 
   useEffect(() => {
     if (!state.selectedId && state.tabs.length > 0) {
-      setState(prev => ({ ...prev, selectedId: state.tabs[0].id }))
+      const newest = [...state.tabs].sort((a, b) => b.timestamp - a.timestamp)[0]
+      setState(prev => ({ ...prev, selectedId: newest.id }))
     }
   }, [state.tabs, state.selectedId])
 
@@ -73,6 +79,9 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     return <Loading />
   }
 
+  const sortedTabs = [...state.tabs].sort((a, b) =>
+    sortOrder === 'desc' ? b.timestamp - a.timestamp : a.timestamp - b.timestamp
+  )
   const selectedChat = state.tabs.find(tab => tab.id === state.selectedId)
 
   return (
@@ -103,9 +112,25 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
         <div className="col-span-3 space-y-4">
           {state.tabs.length > 0 && (
             <div className="space-y-4">
-              <h2 className="text-2xl font-bold">Conversations</h2>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-2xl font-bold">Conversations</h2>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 whitespace-nowrap"
+                  onClick={() => setSortOrder(prev => (prev === 'desc' ? 'asc' : 'desc'))}
+                  title="Toggle sort by last modified time"
+                >
+                  {sortOrder === 'desc' ? (
+                    <ArrowDownWideNarrow className="w-4 h-4" />
+                  ) : (
+                    <ArrowUpWideNarrow className="w-4 h-4" />
+                  )}
+                  {sortOrder === 'desc' ? 'Newest' : 'Oldest'}
+                </Button>
+              </div>
               <div className="space-y-2">
-                {state.tabs.map((tab) => (
+                {sortedTabs.map((tab) => (
                   <Button
                     key={tab.id}
                     variant={state.selectedId === tab.id ? "default" : "outline"}

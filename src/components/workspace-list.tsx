@@ -15,7 +15,8 @@ import { Loading } from "@/components/ui/loading"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { Info } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Info, ArrowDownWideNarrow, ArrowUpWideNarrow } from "lucide-react"
 
 interface Project {
   id: string;
@@ -28,6 +29,7 @@ interface Project {
 export function WorkspaceList() {
   const [projects, setProjects] = useState<Project[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
 
   useEffect(() => {
     const fetchProjects = async () => {
@@ -49,11 +51,38 @@ export function WorkspaceList() {
     return <Loading message="Loading projects..." />
   }
 
-  const projectsWithConversations = projects.filter(project => project.conversationCount > 0)
-  const projectsWithoutConversations = projects.filter(project => project.conversationCount === 0)
+  const byLastModified = (a: Project, b: Project) => {
+    const diff = new Date(a.lastModified).getTime() - new Date(b.lastModified).getTime()
+    return sortOrder === 'desc' ? -diff : diff
+  }
+  const projectsWithConversations = projects
+    .filter(project => project.conversationCount > 0)
+    .sort(byLastModified)
+  const projectsWithoutConversations = projects
+    .filter(project => project.conversationCount === 0)
+    .sort(byLastModified)
 
   return (
     <div className="space-y-8">
+      {projects.length > 0 && (
+        <div className="flex justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => setSortOrder(prev => (prev === 'desc' ? 'asc' : 'desc'))}
+            title="Toggle sort by last modified time"
+          >
+            {sortOrder === 'desc' ? (
+              <ArrowDownWideNarrow className="w-4 h-4" />
+            ) : (
+              <ArrowUpWideNarrow className="w-4 h-4" />
+            )}
+            Last modified: {sortOrder === 'desc' ? 'Newest first' : 'Oldest first'}
+          </Button>
+        </div>
+      )}
+
       {/* Projects with conversations */}
       {projectsWithConversations.length > 0 && (
         <Card>
